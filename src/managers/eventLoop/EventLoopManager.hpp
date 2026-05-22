@@ -118,6 +118,10 @@ class CEventLoopManager {
         wl_event_source*               eventSource = nullptr;
         uint64_t                       lastBootMs  = 0;
         uint64_t                       lastMonoMs  = 0;
+        // second recovery pass: the resume sequence can disable an output
+        // again shortly after the first onResume(), so re-run it once the
+        // sequence has settled.
+        SP<CEventLoopTimer> recoveryTimer;
     } m_suspendDetect;
 
     SIdleData                        m_idle;

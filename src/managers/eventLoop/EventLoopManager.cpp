@@ -10,16 +10,19 @@
 
 #include <sys/timerfd.h>
 #include <ctime>
+#include <chrono>
 
 #include <aquamarine/backend/Backend.hpp>
 using namespace Hyprutils::OS;
 
 #define TIMESPEC_NSEC_PER_SEC 1000000000L
 
-// suspend detection: how often the CLOCK_BOOTTIME timer fires, and the minimum
-// boot-vs-monotonic gap that counts as a real suspend rather than jitter.
+// suspend detection: how often the CLOCK_BOOTTIME timer fires, the minimum
+// boot-vs-monotonic gap that counts as a real suspend rather than jitter, and
+// the delay before the second recovery pass.
 static constexpr int      SUSPEND_CHECK_INTERVAL_S = 30;
 static constexpr uint64_t SUSPEND_THRESHOLD_MS     = 5000;
+static constexpr int      SUSPEND_RECOVERY_REDO_MS = 2000;
 
 static uint64_t LAST_DO_LATER_SEQ = 1;
 
@@ -160,6 +163,10 @@ void CEventLoopManager::enterLoop() {
     suspendTimer.it_interval.tv_sec = SUSPEND_CHECK_INTERVAL_S;
     timerfd_settime(m_suspendDetect.timerfd.get(), 0, &suspendTimer, nullptr);
 
+    m_suspendDetect.recoveryTimer = makeShared<CEventLoopTimer>(
+        std::nullopt, [](SP<CEventLoopTimer> /*self*/, void* /*data*/) { g_pCompositor->onResume(); }, nullptr);
+    addTimer(m_suspendDetect.recoveryTimer);
+
     if (const auto& FD = Config::watcher()->getInotifyFD(); FD.isValid())
         m_configWatcherInotifySource = wl_event_loop_add_fd(m_wayland.loop, FD.get(), WL_EVENT_READABLE, configWatcherWrite, nullptr);
 
@@ -194,6 +201,11 @@ void CEventLoopManager::onSuspendCheck() {
         if (SUSPENDED > 0) {
             Log::logger->log(Log::DEBUG, "Detected a resume from suspend ({}ms), recovering session", SUSPENDED);
             g_pCompositor->onResume();
+            // the resume sequence (connector re-probe, device re-enum) can
+            // disable an output again shortly after this first pass; run a
+            // second recovery once it has settled so the re-enable wins.
+            if (m_suspendDetect.recoveryTimer)
+                m_suspendDetect.recoveryTimer->updateTimeout(std::chrono::milliseconds(SUSPEND_RECOVERY_REDO_MS));
         }
     }
 

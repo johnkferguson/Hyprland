@@ -34,6 +34,15 @@ class CEventLoopManager {
 
     void onTimerFire();
 
+    // fired periodically by a CLOCK_BOOTTIME timerfd; detects a resume from
+    // suspend and triggers session recovery if one is found.
+    void onSuspendCheck();
+
+    // returns how long the system was suspended (ms) given the time elapsed on
+    // CLOCK_BOOTTIME and CLOCK_MONOTONIC across the same interval, or 0 if the
+    // gap is below thresholdMs. Pure; separated out for testing.
+    static uint64_t suspendGapMs(uint64_t bootElapsedMs, uint64_t monoElapsedMs, uint64_t thresholdMs);
+
     // schedules a recalc of the timers
     void scheduleRecalc();
 
@@ -99,6 +108,17 @@ class CEventLoopManager {
         Hyprutils::OS::CFileDescriptor   timerfd;
         bool                             recalcScheduled = false;
     } m_timers;
+
+    // detects a resume from suspend that the session layer never reported
+    // (e.g. s2idle, which keeps the seat active). The timerfd is CLOCK_BOOTTIME
+    // so it keeps counting through suspend; comparing its progress against
+    // CLOCK_MONOTONIC (which freezes) on each fire reveals the suspended time.
+    struct {
+        Hyprutils::OS::CFileDescriptor timerfd;
+        wl_event_source*               eventSource = nullptr;
+        uint64_t                       lastBootMs  = 0;
+        uint64_t                       lastMonoMs  = 0;
+    } m_suspendDetect;
 
     SIdleData                        m_idle;
     std::map<int, SEventSourceData>  m_aqEventSources;

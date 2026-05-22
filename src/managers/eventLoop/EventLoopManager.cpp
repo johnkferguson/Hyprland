@@ -16,7 +16,18 @@ using namespace Hyprutils::OS;
 
 #define TIMESPEC_NSEC_PER_SEC 1000000000L
 
+// suspend detection: how often the CLOCK_BOOTTIME timer fires, and the minimum
+// boot-vs-monotonic gap that counts as a real suspend rather than jitter.
+static constexpr int      SUSPEND_CHECK_INTERVAL_S = 30;
+static constexpr uint64_t SUSPEND_THRESHOLD_MS     = 5000;
+
 static uint64_t LAST_DO_LATER_SEQ = 1;
+
+static uint64_t clockMs(clockid_t clock) {
+    timespec ts{};
+    clock_gettime(clock, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
 
 SEventLoopDoLaterLock::SEventLoopDoLaterLock(uint64_t seq_) : seq(seq_) {
     ;
@@ -28,9 +39,10 @@ SEventLoopDoLaterLock::~SEventLoopDoLaterLock() {
 }
 
 CEventLoopManager::CEventLoopManager(wl_display* display, wl_event_loop* wlEventLoop) {
-    m_timers.timerfd  = CFileDescriptor{timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC)};
-    m_wayland.loop    = wlEventLoop;
-    m_wayland.display = display;
+    m_timers.timerfd        = CFileDescriptor{timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC)};
+    m_suspendDetect.timerfd = CFileDescriptor{timerfd_create(CLOCK_BOOTTIME, TFD_CLOEXEC)};
+    m_wayland.loop          = wlEventLoop;
+    m_wayland.display       = display;
 }
 
 CEventLoopManager::~CEventLoopManager() {
@@ -46,6 +58,8 @@ CEventLoopManager::~CEventLoopManager() {
         wl_event_source_remove(m_idle.eventSource);
     if (m_configWatcherInotifySource)
         wl_event_source_remove(m_configWatcherInotifySource);
+    if (m_suspendDetect.eventSource)
+        wl_event_source_remove(m_suspendDetect.eventSource);
 }
 
 static int timerWrite(int fd, uint32_t mask, void* data) {
@@ -58,6 +72,19 @@ static int timerWrite(int fd, uint32_t mask, void* data) {
     }
 
     g_pEventLoopManager->onTimerFire();
+    return 0;
+}
+
+static int suspendCheckWrite(int fd, uint32_t mask, void* data) {
+    if (!CFileDescriptor::isReadable(fd))
+        Log::logger->log(Log::ERR, "suspendCheckWrite: triggered a non readable event on fd : {}", fd);
+    else {
+        uint64_t expirations;
+        if (read(fd, &expirations, sizeof(expirations)) < 0)
+            Log::logger->log(Log::ERR, "suspendCheckWrite: read failed on fd {}: {}", fd, strerror(errno));
+    }
+
+    g_pEventLoopManager->onSuspendCheck();
     return 0;
 }
 
@@ -124,6 +151,15 @@ void CEventLoopManager::onFdReadableFail(SReadableWaiter* waiter) {
 void CEventLoopManager::enterLoop() {
     m_wayland.eventSource = wl_event_loop_add_fd(m_wayland.loop, m_timers.timerfd.get(), WL_EVENT_READABLE, timerWrite, nullptr);
 
+    // arm the suspend-detection timer (see m_suspendDetect)
+    m_suspendDetect.eventSource     = wl_event_loop_add_fd(m_wayland.loop, m_suspendDetect.timerfd.get(), WL_EVENT_READABLE, suspendCheckWrite, nullptr);
+    m_suspendDetect.lastBootMs      = clockMs(CLOCK_BOOTTIME);
+    m_suspendDetect.lastMonoMs      = clockMs(CLOCK_MONOTONIC);
+    itimerspec suspendTimer         = {};
+    suspendTimer.it_value.tv_sec    = SUSPEND_CHECK_INTERVAL_S;
+    suspendTimer.it_interval.tv_sec = SUSPEND_CHECK_INTERVAL_S;
+    timerfd_settime(m_suspendDetect.timerfd.get(), 0, &suspendTimer, nullptr);
+
     if (const auto& FD = Config::watcher()->getInotifyFD(); FD.isValid())
         m_configWatcherInotifySource = wl_event_loop_add_fd(m_wayland.loop, FD.get(), WL_EVENT_READABLE, configWatcherWrite, nullptr);
 
@@ -147,6 +183,30 @@ void CEventLoopManager::onTimerFire() {
     }
 
     scheduleRecalc();
+}
+
+void CEventLoopManager::onSuspendCheck() {
+    const uint64_t NOW_BOOT = clockMs(CLOCK_BOOTTIME);
+    const uint64_t NOW_MONO = clockMs(CLOCK_MONOTONIC);
+
+    if (m_suspendDetect.lastBootMs > 0) {
+        const uint64_t SUSPENDED = suspendGapMs(NOW_BOOT - m_suspendDetect.lastBootMs, NOW_MONO - m_suspendDetect.lastMonoMs, SUSPEND_THRESHOLD_MS);
+        if (SUSPENDED > 0) {
+            Log::logger->log(Log::DEBUG, "Detected a resume from suspend ({}ms), recovering session", SUSPENDED);
+            g_pCompositor->onResume();
+        }
+    }
+
+    m_suspendDetect.lastBootMs = NOW_BOOT;
+    m_suspendDetect.lastMonoMs = NOW_MONO;
+}
+
+uint64_t CEventLoopManager::suspendGapMs(uint64_t bootElapsedMs, uint64_t monoElapsedMs, uint64_t thresholdMs) {
+    if (bootElapsedMs <= monoElapsedMs)
+        return 0;
+
+    const uint64_t GAP = bootElapsedMs - monoElapsedMs;
+    return GAP >= thresholdMs ? GAP : 0;
 }
 
 void CEventLoopManager::addTimer(SP<CEventLoopTimer> timer) {

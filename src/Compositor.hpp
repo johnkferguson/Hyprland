@@ -70,6 +70,7 @@ class CCompositor {
     void                                         bumpNofile();
     void                                         restoreNofile();
     bool                                         setWatchdogFd(int fd);
+    void                                         onResume();
 
     bool                                         m_readyToProcess = false;
     bool                                         m_sessionActive  = true;

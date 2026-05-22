@@ -481,21 +481,7 @@ void CCompositor::initAllSignals() {
         m_aqBackend->session->events.changeActive.listenStatic([this] {
             if (m_aqBackend->session->active) {
                 Log::logger->log(Log::DEBUG, "Session got activated!");
-
-                m_sessionActive = true;
-
-                // Reset animation tick state to avoid stale timer issues after suspend/wake
-                if (g_pAnimationManager)
-                    g_pAnimationManager->resetTickState();
-
-                for (auto const& m : m_monitors) {
-                    scheduleFrameForMonitor(m);
-                    auto cpy = m->m_activeMonitorRule;
-                    m->applyMonitorRule(std::move(cpy), true);
-                }
-
-                Config::monitorRuleMgr()->scheduleReload();
-                g_pCursorManager->syncGsettings();
+                onResume();
             } else {
                 Log::logger->log(Log::DEBUG, "Session got deactivated!");
 
@@ -503,6 +489,23 @@ void CCompositor::initAllSignals() {
             }
         });
     }
+}
+
+void CCompositor::onResume() {
+    m_sessionActive = true;
+
+    // reset animation tick state to avoid stale timer issues after suspend/wake
+    if (g_pAnimationManager)
+        g_pAnimationManager->resetTickState();
+
+    for (auto const& m : m_monitors) {
+        scheduleFrameForMonitor(m);
+        auto cpy = m->m_activeMonitorRule;
+        m->applyMonitorRule(std::move(cpy), true);
+    }
+
+    Config::monitorRuleMgr()->scheduleReload();
+    g_pCursorManager->syncGsettings();
 }
 
 void CCompositor::removeAllSignals() {

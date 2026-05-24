@@ -2196,6 +2196,12 @@ void CMonitor::setDPMS(bool on) {
 }
 
 void CMonitor::commitDPMSState(bool state) {
+    // Guard against stale animation callbacks: if m_dpmsStatus has changed since
+    // this commit was queued (e.g. setDPMS(true) cancelled the fade-out), skip it
+    // so we don't disable a freshly-enabled output.
+    if (state != m_dpmsStatus)
+        return;
+
     m_output->state->resetExplicitFences();
     m_output->state->setEnabled(state);
 

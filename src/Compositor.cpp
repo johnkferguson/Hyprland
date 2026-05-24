@@ -499,6 +499,11 @@ void CCompositor::onResume() {
         g_pAnimationManager->resetTickState();
 
     for (auto const& m : m_monitors) {
+        // Cancel any in-flight DPMS-off fade. The end-of-fade callback queued
+        // by setDPMS(false) would otherwise call commitDPMSState(false) and
+        // disable the output microseconds after applyMonitorRule re-enables it.
+        m->setDPMS(true);
+
         scheduleFrameForMonitor(m);
         auto cpy = m->m_activeMonitorRule;
         m->applyMonitorRule(std::move(cpy), true);

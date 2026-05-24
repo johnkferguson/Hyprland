@@ -2183,10 +2183,31 @@ void CMonitor::setDPMS(bool on) {
         m_dpmsBlackOpacity->setCallbackOnEnd(nullptr);
         m_dpmsBlackOpacity->setValueAndWarp(0.F);
         *m_dpmsBlackOpacity = 1.F;
+
+        // Capture clocks at queue time so the callback can detect a suspend gap.
+        // CLOCK_BOOTTIME advances through suspend; CLOCK_MONOTONIC freezes. If
+        // they diverge by the time the animation completes, suspend happened
+        // mid-fade — don't commit a disable for the prior session state.
+        timespec tsBoot{}, tsMono{};
+        clock_gettime(CLOCK_BOOTTIME, &tsBoot);
+        clock_gettime(CLOCK_MONOTONIC, &tsMono);
+        const uint64_t queuedBootMs = sc<uint64_t>(tsBoot.tv_sec) * 1000 + sc<uint64_t>(tsBoot.tv_nsec) / 1'000'000;
+        const uint64_t queuedMonoMs = sc<uint64_t>(tsMono.tv_sec) * 1000 + sc<uint64_t>(tsMono.tv_nsec) / 1'000'000;
+
         m_dpmsBlackOpacity->setCallbackOnEnd(
-            [this, self = m_self](auto) {
+            [this, self = m_self, queuedBootMs, queuedMonoMs](auto) {
                 if (!self)
                     return;
+
+                timespec nowBoot{}, nowMono{};
+                clock_gettime(CLOCK_BOOTTIME, &nowBoot);
+                clock_gettime(CLOCK_MONOTONIC, &nowMono);
+                const uint64_t bootElapsed = (sc<uint64_t>(nowBoot.tv_sec) * 1000 + sc<uint64_t>(nowBoot.tv_nsec) / 1'000'000) - queuedBootMs;
+                const uint64_t monoElapsed = (sc<uint64_t>(nowMono.tv_sec) * 1000 + sc<uint64_t>(nowMono.tv_nsec) / 1'000'000) - queuedMonoMs;
+                if (bootElapsed > monoElapsed + 500) {
+                    Log::logger->log(Log::DEBUG, "DPMS-off animation fired after suspend gap ({}ms), skipping commit for {}", bootElapsed - monoElapsed, m_name);
+                    return;
+                }
 
                 // commit DPMS to disable the monitor, it's fully black now
                 commitDPMSState(false);

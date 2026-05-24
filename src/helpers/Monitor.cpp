@@ -239,6 +239,8 @@ void CMonitor::onConnect(bool noRule) {
     // if it's disabled, disable and ignore
     if (monitorRule.m_disabled) {
 
+        Log::logger->log(Log::DEBUG, "[dpms-trace] onConnect disabling {} via monitorRule.m_disabled", m_output->name);
+
         m_output->state->resetExplicitFences();
         m_output->state->setEnabled(false);
 
@@ -478,6 +480,8 @@ void CMonitor::onDisconnect(bool destroy) {
     if (m_activeWorkspace)
         m_activeWorkspace->m_visible = false;
     m_activeWorkspace.reset();
+
+    Log::logger->log(Log::DEBUG, "[dpms-trace] onDisconnect disabling {}", m_output->name);
 
     m_output->state->resetExplicitFences();
     m_output->state->setAdaptiveSync(false);
@@ -2164,6 +2168,8 @@ bool CMonitor::shouldUseSoftwareCursors() {
 }
 
 void CMonitor::setDPMS(bool on) {
+    Log::logger->log(Log::DEBUG, "[dpms-trace] setDPMS({}) on {}, was {}", on, m_name, m_dpmsStatus);
+
     // Don't trigger animation if the target state is the same
     if (m_dpmsStatus == on)
         return;
@@ -2217,6 +2223,8 @@ void CMonitor::setDPMS(bool on) {
 }
 
 void CMonitor::commitDPMSState(bool state) {
+    Log::logger->log(Log::DEBUG, "[dpms-trace] commitDPMSState({}) on {}, m_dpmsStatus={}", state, m_name, m_dpmsStatus);
+
     // Guard against stale animation callbacks: if m_dpmsStatus has changed since
     // this commit was queued (e.g. setDPMS(true) cancelled the fade-out), skip it
     // so we don't disable a freshly-enabled output.
@@ -2237,6 +2245,8 @@ void CMonitor::commitDPMSState(bool state) {
             [this, self = m_self](SP<CEventLoopTimer> s, void* d) {
                 if (!self)
                     return;
+
+                Log::logger->log(Log::DEBUG, "[dpms-trace] retry timer firing for {}, m_dpmsStatus={}", m_name, m_dpmsStatus);
 
                 m_output->state->resetExplicitFences();
                 m_output->state->setEnabled(m_dpmsStatus);
